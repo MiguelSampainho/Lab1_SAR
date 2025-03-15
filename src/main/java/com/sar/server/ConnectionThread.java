@@ -70,7 +70,7 @@ public class ConnectionThread extends Thread  {
          req.version= st.nextToken();  // Store HTTP version
      
         // read the remaining headers in to the headers property of the request object   
-        
+        req.headers.readHeaders(TextReader);
         
         // check if the Content-Length size is different than zero. If true read the body of the request (that can contain POST data)
         int clength= 0;
