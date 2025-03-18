@@ -202,7 +202,7 @@ public class Response {
             TextPrinter.write(data);
         }
         catch (IOException e ) {
-            System.out.println( "I/O error opeening FileInputStream " + e );
+            System.out.println( "I/O error  opeening FileInputStream " + e );
         }
     }
     
