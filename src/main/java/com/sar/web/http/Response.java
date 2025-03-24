@@ -11,6 +11,9 @@ import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
+import java.text.SimpleDateFormat;
+
+
 public class Response {
     private static final org.slf4j.Logger logger = LoggerFactory.getLogger(Response.class);
     /**
@@ -42,6 +45,15 @@ public class Response {
          * define Server header field name
          */
         this.headers.setHeader("Server", server_name);
+        // data
+    }
+
+    public class DateUtil {
+        public static String getHTTPDate(Date date) {
+            SimpleDateFormat httpFormat = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.UK);
+            httpFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
+            return httpFormat.format(date);
+        }
     }
 
     /* 
@@ -87,10 +99,17 @@ public class Response {
      * @param mime_enc */
     public void setFileHeaders(File file, String contentType) {
         this.file = file;
-        this.file = null;
-        // header lines not set in 'Headers' object!
-        // ...
-        logger.debug("Header fields not defined in HTTPAnswer.set_file");
+        this.text = null;
+     
+        if(file != null && file.exists()){
+            headers.setHeader("Content-Type", contentType);
+            headers.setHeader("Content-Length", String.valueOf(file.length()));
+            headers.setHeader("Last-Modified", DateUtil.getHTTPDate(new Date(file.lastModified())));
+            headers.setHeader("Date", DateUtil.getHTTPDate(new Date()));
+        } else {
+            logger.warn("Ficheiro inválido ou inexistente em setFileHeaders()");
+        }
+        logger.debug("Headers definidos em setFileHeaders: {}", headers);
     }
 
     /** Sets the headers needed in a reply with a locally generated HTML string
@@ -100,9 +119,13 @@ public class Response {
     public void setTextHeaders(String text) {
         this.text = text;
         this.file = null;
-        // header lines not set in 'Headers' object!
-        // ...
-        logger.debug("Header fields not defined in HTTPAnswer.set_text");
+       
+        headers.setHeader("Content-Type", "text/html; charset=UTF-8");
+        headers.setHeader("Content-Length", String.valueOf(text.length()));
+        headers.setHeader("Connection", "keep-alive");
+        headers.setHeader("Date", DateUtil.getHTTPDate(new Date()));
+
+        logger.debug("Headers definidos em setTextHeaders: {}", headers);
     }
 
         /** Prepares an HTTP answer with an error code
