@@ -54,7 +54,21 @@ public class Headers {
      * @param reader   reader object
      */
     public void readHeaders(BufferedReader reader) throws IOException {
-     
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (line.isEmpty()) {
+                break;
+            }
+
+            int colonIndex = line.indexOf(":");
+            if (colonIndex > 0) {
+                String name = line.substring(0, colonIndex).trim();
+                String value = line.substring(colonIndex + 1).trim();
+                setHeader(name, value);
+            } else {
+                logger.warn("Error in header line: {}", line);
+            }
+        }
     }
 
     public void writeHeaders(PrintStream writer) {
