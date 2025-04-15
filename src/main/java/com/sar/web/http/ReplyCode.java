@@ -10,6 +10,7 @@ public class ReplyCode {
     public static final int NOTFOUND= 404;
     public static final int PROXYAUTHENTIC=407;
     public static final int NOTIMPLEMENTED= 501;
+    public static final int METHODNOTALLOWED = 405;
 
     
     private int code;

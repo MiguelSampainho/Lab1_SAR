@@ -169,7 +169,9 @@ public class ApiHandler extends AbstractRequestHandler  {
             );
 
             response.setCode(ReplyCode.OK);
-            response.setTextHeaders(html);
+            response.setTextHeaders(html); // Uses UTF-8 by default now
+
+            // NOTE: Cache-Control headers removed in this version
 
         } catch (Exception e) {
             logger.error("Error processing POST request in ApiHandler", e);

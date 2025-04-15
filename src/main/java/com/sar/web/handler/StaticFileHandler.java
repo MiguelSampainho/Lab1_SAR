@@ -1,179 +1,189 @@
 package com.sar.web.handler;
 
- import com.sar.web.http.Request;
- import com.sar.web.http.Response;
- import com.sar.web.http.ReplyCode;
- import org.slf4j.Logger;
- import org.slf4j.LoggerFactory;
+// Correct import for the actual Response class
+import com.sar.web.http.Response;
+import com.sar.web.http.Request;
+import com.sar.web.http.ReplyCode; // Import ReplyCode
 
- import java.io.File;
- import java.io.FileInputStream; // Keep if using direct file writing (though Response handles it now)
- import java.io.IOException;
- import java.io.OutputStream; // Keep if using direct file writing
- import java.io.PrintWriter; // Keep if using direct file writing
- import java.text.DateFormat;
- import java.text.SimpleDateFormat;
- import java.text.ParseException; // Added import
- import java.util.Date;
- import java.util.HashMap;
- import java.util.Locale;
- import java.util.Map;
- import java.util.Set; // Added import for Map iteration
- import java.util.TimeZone;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
- public class StaticFileHandler extends AbstractRequestHandler {
-     private static final Logger logger = LoggerFactory.getLogger(StaticFileHandler.class);
-     private final String baseDirectory;
-     private final String homeFileName;
-     private final Map<String, String> mimeTypes;
+import java.io.File;
+import java.io.IOException;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Locale; // Needed for getMimeType extension processing
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
-     // Constructor
-     public StaticFileHandler(String baseDirectory, String homeFileName) {
-         this.baseDirectory = baseDirectory;
-         this.homeFileName = homeFileName;
-         this.mimeTypes = MIME_TYPES; // Initialize from static map
-     }
+public class StaticFileHandler extends AbstractRequestHandler {
+    private static final Logger logger = LoggerFactory.getLogger(StaticFileHandler.class);
+    private final String baseDirectory;
+    private final String homeFileName;
+    private final Map<String, String> mimeTypes;
+    private final Map<String, String> etagCache = new ConcurrentHashMap<>();
 
-     // Static block for MIME types
-     private static final Map<String, String> MIME_TYPES = new HashMap<>();
-     static {
-         MIME_TYPES.put(".html", "text/html");
-         MIME_TYPES.put(".htm", "text/html");
-         MIME_TYPES.put(".css", "text/css");
-         MIME_TYPES.put(".js", "text/javascript");
-         MIME_TYPES.put(".jpg", "image/jpeg");
-         MIME_TYPES.put(".jpeg", "image/jpeg");
-         MIME_TYPES.put(".png", "image/png");
-         MIME_TYPES.put(".gif", "image/gif");
-         MIME_TYPES.put(".ico", "image/x-icon"); // Added favicon type
-         // Add other necessary types
-     }
-     private static final String DEFAULT_MIME_TYPE = "application/octet-stream";
+    // Constructor
+    public StaticFileHandler(String baseDirectory, String homeFileName) {
+        this.baseDirectory = baseDirectory;
+        this.homeFileName = homeFileName;
+        this.mimeTypes = MIME_TYPES;
+    }
+
+    // Static block for MIME types
+    private static final Map<String, String> MIME_TYPES = new HashMap<>();
+    static {
+        MIME_TYPES.put(".html", "text/html");
+        MIME_TYPES.put(".htm", "text/html");
+        MIME_TYPES.put(".css", "text/css");
+        MIME_TYPES.put(".js", "text/javascript");
+        MIME_TYPES.put(".jpg", "image/jpeg");
+        MIME_TYPES.put(".jpeg", "image/jpeg");
+        MIME_TYPES.put(".png", "image/png");
+        MIME_TYPES.put(".gif", "image/gif");
+        MIME_TYPES.put(".ico", "image/x-icon");
+    }
+    private static final String DEFAULT_MIME_TYPE = "application/octet-stream";
 
 
-     @Override
-     protected void handleGet(Request request, Response response) {
-         // *** Force Logging to WARN level for this specific check ***
-         String ifModifiedSinceHeader = request.headers.getHeaderValue("If-Modified-Since");
-         // Use WARN to ensure this log appears regardless of logback.xml level (unless set higher than WARN)
-         logger.warn(">>>> Checking for If-Modified-Since Header. Value retrieved: {}", ifModifiedSinceHeader);
-         // ***
+    @Override
+    protected void handleGet(Request request, Response response) {
+        String path = request.urlText;
+        if ("/".equals(path) || path.isEmpty()) {
+            path = "/" + homeFileName;
+        }
 
-         String path = request.urlText;
-         if ("/".equals(path)) {
-             path = "/" + homeFileName;
-         }
+        if (path.contains("..")) {
+            logger.warn("Directory traversal attempt blocked: {}", path);
+            response.setError(ReplyCode.BADREQ, request.version); // Use ReplyCode constant
+            return;
+        }
 
-         // Ensure path separators are correct for the OS
-         String fullPath = baseDirectory + path.replace('/', File.separatorChar);
-         File file = new File(fullPath);
+        String fullPath = baseDirectory + path.replace('/', File.separatorChar);
+        File file = new File(fullPath);
 
-         try {
-             if (file.exists() && file.isFile()) {
-                 // --- If-Modified-Since Check START ---
-                 // Use the variable already fetched above
-                 if (ifModifiedSinceHeader != null && !ifModifiedSinceHeader.isEmpty()) {
-                      // Force log level to WARN for this test
-                     logger.warn(">>>> Received If-Modified-Since header: {}", ifModifiedSinceHeader);
-                     try {
-                         // Ensure correct date format pattern and Locale/TimeZone
-                         DateFormat httpDateFormat = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.UK);
-                         httpDateFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
-                         Date headerDate = httpDateFormat.parse(ifModifiedSinceHeader);
-                         logger.warn(">>>> Parsed header date: {} ({} ms)", headerDate, headerDate.getTime()); // WARN level
+        try {
+            if (file.exists() && file.isFile() && file.canRead()) {
 
-                         long fileLastModifiedMillis = file.lastModified();
-                         logger.warn(">>>> File last modified: {} ms ({})", fileLastModifiedMillis, new Date(fileLastModifiedMillis)); // WARN level + Date
+                String currentETag = generateETag(file);
 
-                         // Compare file's last modified time (truncate to seconds for comparison)
-                         long fileLastModifiedSeconds = fileLastModifiedMillis / 1000;
-                         long headerDateSeconds = headerDate.getTime() / 1000;
-                         logger.warn(">>>> Comparing: File seconds {} <= Header seconds {}", fileLastModifiedSeconds, headerDateSeconds); // WARN level
+                String ifNoneMatchHeader = request.headers.getHeaderValue("If-None-Match");
+                if (ifNoneMatchHeader != null && !ifNoneMatchHeader.isEmpty()) {
+                    if (ifNoneMatchHeader.trim().equals(currentETag)) {
+                        logger.info("ETag matches for {}. Sending 304 Not Modified.", path);
+                        response.setCode(ReplyCode.NOTMODIFIED); // Use ReplyCode constant
+                        response.setVersion(request.version);
+                        response.setDate();
+                        response.setHeader("ETag", currentETag);
+                        return;
+                    } else {
+                        logger.debug("ETag mismatch for {}. Header: '{}', File ETag: '{}'", path, ifNoneMatchHeader, currentETag);
+                    }
+                }
 
-                         if (fileLastModifiedSeconds <= headerDateSeconds) {
-                             logger.warn(">>>> CONFIRMED: File not modified. Sending 304."); // WARN level
-                             response.setCode(ReplyCode.NOTMODIFIED);
-                             response.setVersion(request.version);
-                             response.setDate(); // Set Date header for 304 response
-                             // No body or other content-specific headers needed for 304
-                             return; // Stop processing, response set above
-                         } else {
-                             logger.warn(">>>> CONFIRMED: File IS modified. Sending 200."); // WARN level
-                         }
-                     } catch (ParseException e) {
-                         // Log parsing errors clearly
-                         logger.error(">>>> CRITICAL: Could not parse If-Modified-Since header '{}': {}", ifModifiedSinceHeader, e.getMessage());
-                          // Treat as if header wasn't usable, proceed to send 200 OK
-                     }
-                 } else {
-                      // This will log if the header value was null or empty after retrieval attempt
-                      logger.warn(">>>> No If-Modified-Since header received or header was empty."); // WARN level
-                 }
-                 // --- If-Modified-Since Check END ---
+                String ifModifiedSinceHeader = request.headers.getHeaderValue("If-Modified-Since");
+                if (ifModifiedSinceHeader != null && !ifModifiedSinceHeader.isEmpty()) {
+                    try {
+                        DateFormat httpDateFormat = Response.DateUtil.getHTTPDateFormatter();
+                        Date headerDate = httpDateFormat.parse(ifModifiedSinceHeader);
+                        long fileLastModifiedMillis = file.lastModified();
+                        long fileLastModifiedSeconds = fileLastModifiedMillis / 1000;
+                        long headerDateSeconds = headerDate.getTime() / 1000;
 
-                 // If we reach here, send 200 OK
-                 logger.info("Proceeding to send 200 OK for file: {}", fullPath); // Keep INFO
-                 response.setCode(ReplyCode.OK);
-                 response.setVersion(request.version);
-                 prepareHeaders(response, file); // Sets Last-Modified, Content-Type etc.
-                 response.setFile(file); // Associate the file with the response
+                        if (fileLastModifiedSeconds <= headerDateSeconds) {
+                            logger.info("File not modified since {}. Sending 304 Not Modified.", ifModifiedSinceHeader);
+                            response.setCode(ReplyCode.NOTMODIFIED); // Use ReplyCode constant
+                            response.setVersion(request.version);
+                            response.setDate();
+                            response.setHeader("ETag", currentETag);
+                            return;
+                        } else {
+                             logger.debug("File IS modified since {}.", ifModifiedSinceHeader);
+                        }
+                    } catch (ParseException e) {
+                        logger.warn("Could not parse If-Modified-Since header '{}': {}", ifModifiedSinceHeader, e.getMessage());
+                    }
+                }
 
-             } else {
-                 logger.warn("File not found: {}. Returning 404 error.", fullPath);
-                 response.setCode(ReplyCode.NOTFOUND);
-                 response.setVersion(request.version);
-                 // Optional: Set a custom 404 page body
-                 // response.setError(ReplyCode.NOTFOUND, request.version);
-             }
-         } catch (Exception e) {
-             logger.error("Error handling GET request for file: {}", fullPath, e);
-             response.setError(ReplyCode.BADREQ, request.version); // Consider 500 Internal Server Error
-         }
-     }
+                logger.info("Sending 200 OK for file: {}", fullPath);
+                response.setCode(ReplyCode.OK); // Use ReplyCode constant
+                response.setVersion(request.version);
+                prepareHeaders(response, file, currentETag);
+                response.setFile(file);
 
-     @Override
-     protected void handlePost(Request request, Response response) {
-         logger.warn("POST method not supported for static file: {}", request.urlText);
-         response.setError(ReplyCode.NOTIMPLEMENTED, request.version); // Or ReplyCode.METHODNOTALLOWED (405)
-     }
+            } else {
+                logger.warn("Static file not found or not readable: {}. Returning 404.", fullPath);
+                response.setError(ReplyCode.NOTFOUND, request.version); // Use ReplyCode constant
+            }
+        } catch (Exception e) {
+            logger.error("Error handling GET request for static file: {}", fullPath, e);
+            response.setError(ReplyCode.BADREQ, request.version); // Use ReplyCode constant
+        }
+    }
 
-     private String getMimeType(String path) {
-         int dotIndex = path.lastIndexOf('.');
-         if (dotIndex >= 0) { // Ensure dot is found
-             String extension = path.substring(dotIndex).toLowerCase();
-             return mimeTypes.getOrDefault(extension, DEFAULT_MIME_TYPE);
-         }
-         return DEFAULT_MIME_TYPE; // Default if no extension
-     }
+    @Override
+    protected void handlePost(Request request, Response response) {
+        logger.warn("POST method not supported for static file: {}", request.urlText);
+        // *** Corrected to use ReplyCode.METHODNOTALLOWED ***
+        response.setError(ReplyCode.METHODNOTALLOWED, request.version);
+        response.setHeader("Allow", "GET, HEAD");
+    }
 
-     /**
-      * Sets appropriate headers for a static file response (e.g., Last-Modified, Content-Type, Content-Length).
-      * Note: Date and Server headers are typically set by the Response class itself.
-      * @param res The Response object to add headers to.
-      * @param file The File being served.
-      */
-     private void prepareHeaders(Response res, File file) {
-         // Ensure DateFormat pattern is correct and consistent
-         DateFormat httpDateFormat = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.UK);
-         httpDateFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
+    private String generateETag(File file) {
+       String filePath = file.getAbsolutePath();
+       String cachedEtag = etagCache.get(filePath);
+       String currentTagValue = createETagValue(file);
 
-         // Set Last-Modified header
-         Date lastModified = new Date(file.lastModified());
-         res.setHeader("Last-Modified", httpDateFormat.format(lastModified));
+       if (cachedEtag != null) {
+           if (cachedEtag.equals(currentTagValue)) {
+                logger.trace("ETag cache hit for: {}", filePath);
+                return cachedEtag;
+           } else {
+               logger.debug("ETag cache invalid for: {}, regenerating.", filePath);
+           }
+       }
+       etagCache.put(filePath, currentTagValue);
+       logger.trace("Generated and cached ETag for {}: {}", filePath, currentTagValue);
+       return currentTagValue;
+    }
 
-         // Set Content-Type header (including charset for text types)
-         String contentType = getMimeType(file.getName());
-         if (contentType.startsWith("text/")) {
-              // Append charset only if it's a text type
-             res.setHeader("Content-Type", contentType + "; charset=ISO-8859-1"); // As per project spec [cite: 25]
-         } else {
-             res.setHeader("Content-Type", contentType);
-         }
+    private String createETagValue(File file) {
+        long lastModified = file.lastModified();
+        long length = file.length();
+        return "\"" + Long.toHexString(lastModified) + "-" + Long.toHexString(length) + "\"";
+    }
 
-         // Set Content-Length header
-         res.setHeader("Content-Length", String.valueOf(file.length()));
+    private String getMimeType(String path) {
+        int dotIndex = path.lastIndexOf('.');
+        if (dotIndex >= 0) {
+            // Use Locale.ENGLISH for consistent lowercasing regardless of system locale
+            String extension = path.substring(dotIndex).toLowerCase(Locale.ENGLISH);
+            return mimeTypes.getOrDefault(extension, DEFAULT_MIME_TYPE);
+        }
+        return DEFAULT_MIME_TYPE;
+    }
 
-         // Note: 'Content-Encoding' header is typically used for compression (gzip, deflate)
-         // and not usually set to ISO-8859-1. The character set is part of Content-Type.
-     }
- }
+    private void prepareHeaders(Response res, File file, String etag) {
+        DateFormat httpDateFormat = Response.DateUtil.getHTTPDateFormatter();
+        Date lastModified = new Date(file.lastModified());
+        res.setHeader("Last-Modified", httpDateFormat.format(lastModified));
+
+        if (etag != null) {
+           res.setHeader("ETag", etag);
+        }
+
+        String contentType = getMimeType(file.getName());
+        if (contentType.startsWith("text/")) {
+            res.setHeader("Content-Type", contentType + "; charset=ISO-8859-1");
+        } else {
+            res.setHeader("Content-Type", contentType);
+        }
+
+        res.setHeader("Content-Length", String.valueOf(file.length()));
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Cache-Control", "public, max-age=3600");
+    }
+
+} // End of class

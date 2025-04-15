@@ -4,23 +4,25 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
-import java.text.DateFormat;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.*;
+import java.io.FileInputStream; // Needed for writeFile
+import java.io.IOException;     // Needed for send_Answer, writeFile
+import java.io.PrintStream;   // Needed for send_Answer, writeFile
+import java.nio.charset.StandardCharsets; // Needed for setTextHeaders, generateErrorPage
+import java.text.DateFormat;    // Needed for DateUtil
+import java.text.ParseException;// Needed for StaticFileHandler potentially (though handled there)
+import java.text.SimpleDateFormat; // Needed for DateUtil
+import java.util.*;             // Needed for Date, List, ArrayList, TimeZone, Locale, Enumeration
 
 public class Response {
+    // Logger IS used now
     private static final Logger logger = LoggerFactory.getLogger(Response.class);
 
     public ReplyCode code;
     public Headers headers;
-    public List<String> setCookieHeaders; // List for Set-Cookie header values
+    public List<String> setCookieHeaders;
     public String text;
     public File file;
+    // serverName IS used in generateErrorPage
     private final String serverName;
 
     public Response(String server_name) {
@@ -31,24 +33,32 @@ public class Response {
         this.headers.setHeader("Server", server_name);
     }
 
-    // Static inner class for Date Formatting
+    // Static inner class for Date Formatting - With ThreadLocal
     public static class DateUtil {
-       public static String getHTTPDate(Date date) {
-           // Standard HTTP date format: EEE, dd MMM yyyy HH:mm:ss z
-           SimpleDateFormat httpFormat = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.UK);
-           httpFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
-           return httpFormat.format(date);
-       }
-   }
+        private static final ThreadLocal<DateFormat> HTTP_DATE_FORMATTER =
+            ThreadLocal.withInitial(() -> {
+                SimpleDateFormat formatter = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.UK);
+                formatter.setTimeZone(TimeZone.getTimeZone("GMT"));
+                return formatter;
+            });
 
-    // Setters
+        public static String getHTTPDate(Date date) {
+            return HTTP_DATE_FORMATTER.get().format(date);
+        }
+
+        public static DateFormat getHTTPDateFormatter() {
+            return HTTP_DATE_FORMATTER.get();
+        }
+    }
+
+    // --- Restored Methods ---
+
     public void setCode(int _code) { code.setCode(_code); }
     public void setVersion(String v) { code.setVersion(v); }
     public void setHeader(String name, String value) { headers.setHeader(name, value); }
     public void setFile(File file) { this.file = file; this.text = null; }
     public void setText(String text) { this.text = text; this.file = null; }
 
-    /** Adds a complete Set-Cookie header string. */
     public void addSetCookieHeader(String fullCookieHeaderString) {
         if (fullCookieHeaderString != null && !fullCookieHeaderString.isEmpty()) {
             this.setCookieHeaders.add(fullCookieHeaderString);
@@ -56,15 +66,13 @@ public class Response {
         }
     }
 
-    /** Sets headers for file responses */
-     public void setFileHeaders(File file, String contentType) {
+    public void setFileHeaders(File file, String contentType) {
         this.file = file;
         this.text = null;
         if(file != null && file.exists()){
             headers.setHeader("Last-Modified", DateUtil.getHTTPDate(new Date(file.lastModified())));
             headers.setHeader("Content-Type", contentType);
             headers.setHeader("Content-Length", String.valueOf(file.length()));
-            // Append charset for text types as per project spec
             if (contentType.startsWith("text/")) {
                 headers.setHeader("Content-Type", contentType + "; charset=ISO-8859-1");
             }
@@ -74,45 +82,40 @@ public class Response {
         logger.debug("File headers set for: {}", file != null ? file.getName() : "null file");
     }
 
-   /** Sets headers for text/HTML responses */
     public void setTextHeaders(String text) {
         this.text = text;
         this.file = null;
-        // Use UTF-8 for dynamically generated HTML content
         headers.setHeader("Content-Type", "text/html; charset=UTF-8");
         headers.setHeader("Content-Length", String.valueOf(text != null ? text.getBytes(StandardCharsets.UTF_8).length : 0));
         logger.debug("Text headers set (Content-Type: text/html; charset=UTF-8).");
     }
 
-   /** Configures response for an error */
     public void setError(int codeNumber, String version) {
         setVersion(version != null ? version : "HTTP/1.1");
         code.setCode(codeNumber);
         String errorHtml = generateErrorPage(codeNumber);
         setTextHeaders(errorHtml);
         setDate();
-        setHeader("Connection", "close"); // Errors typically close connection
+        setHeader("Connection", "close");
     }
 
-    /** Generates a simple HTML error page */
     private String generateErrorPage(int codeNumber) {
         String codeText = ReplyCode.codeText(codeNumber);
+        // Use serverName here
         return String.format(
             "<!DOCTYPE html><html><head><title>Error %d</title></head><body><h1>Error %d - %s</h1><p>Generated by %s</p></body></html>",
-            codeNumber, codeNumber, codeText != null ? codeText : "Unknown Error", serverName
+            codeNumber, codeNumber, codeText != null ? codeText : "Unknown Error", this.serverName
         );
     }
 
     public int getCode() { return code.getCode(); }
     public Enumeration<String> getAllHeaderNames() { return headers.getAllHeaderNames(); }
 
-    /** Sets the "Date" header field */
     public void setDate() {
         headers.setHeader("Date", DateUtil.getHTTPDate(new Date()));
     }
 
-    /** Sends the HTTP reply to the client */
-    public void send_Answer(PrintStream TextPrinter) throws IOException {
+    public void send_Answer(PrintStream TextPrinter) throws IOException { // Requires PrintStream, IOException
         if (code.isUndef()) {
             logger.error("Response code is undefined before sending. Setting to 400.");
             setError(ReplyCode.BADREQ, "HTTP/1.1");
@@ -122,11 +125,10 @@ public class Response {
         }
 
         logger.info("Sending reply: {} {} {}", code.getVersion(), code.getCode(), code.getCodeTxt());
-        TextPrinter.print(code.toString() + "\r\n"); // Status Line
+        TextPrinter.print(code.toString() + "\r\n");
 
-        headers.writeHeaders(TextPrinter); // Send regular headers
+        headers.writeHeaders(TextPrinter);
 
-        // Send Set-Cookie headers
         if (setCookieHeaders != null && !setCookieHeaders.isEmpty()) {
            for (String cookieHeaderValue : setCookieHeaders) {
                TextPrinter.print("Set-Cookie: " + cookieHeaderValue + "\r\n");
@@ -134,20 +136,18 @@ public class Response {
            }
         }
 
-        TextPrinter.print("\r\n"); // End of headers
+        TextPrinter.print("\r\n");
 
-        // Write content if appropriate (not for 304, 204, 307)
         boolean sendBody = code.getCode() != ReplyCode.NOTMODIFIED &&
                            code.getCode() != 204 &&
                            code.getCode() != ReplyCode.TMPREDIRECT;
 
         if (sendBody) {
             if (text != null) {
-                TextPrinter.print(text); // Assumes PrintStream was initialized with correct charset (UTF-8)
+                TextPrinter.print(text);
             } else if (file != null) {
-                writeFile(TextPrinter);
+                writeFile(TextPrinter); // Requires FileInputStream, IOException
             } else {
-                // Log if body is expected but null (e.g., for 200 OK)
                 if (code.getCode() >= 200 && code.getCode() < 300 && code.getCode() != 204) {
                    logger.warn("Response body (text or file) is null for status code {}", code.getCode());
                 }
@@ -156,34 +156,34 @@ public class Response {
             logger.debug("No body content sent for status code {}", code.getCode());
         }
 
-        TextPrinter.flush(); // Flush PrintStream buffer
+        TextPrinter.flush();
         logger.debug("Response flushed.");
     }
 
-    /** Writes file content chunk by chunk */
-    private void writeFile(PrintStream TextPrinter){
+    private void writeFile(PrintStream TextPrinter) throws IOException { // Requires FileInputStream, IOException
         if (file == null || !file.exists()) {
             logger.error("Attempted to write null or non-existent file.");
             return;
         }
-        try (FileInputStream fin = new FileInputStream(file)) {
+        try (FileInputStream fin = new FileInputStream(file)) { // Requires FileInputStream
             byte[] buffer = new byte[4096];
             int bytesRead;
             long totalBytes = file.length();
             long writtenBytes = 0;
             logger.debug("Starting file transfer for {} ({} bytes)...", file.getName(), totalBytes);
             while ((bytesRead = fin.read(buffer)) != -1) {
-                // Write bytes directly to the underlying OutputStream of PrintStream
                 TextPrinter.write(buffer, 0, bytesRead);
                 writtenBytes += bytesRead;
             }
-            // PrintStream auto-flush might handle this, or the explicit flush in send_Answer
             if (writtenBytes != totalBytes) {
                 logger.warn("File write size mismatch for {}: expected {}, wrote {}", file.getName(), totalBytes, writtenBytes);
             }
             logger.debug("Finished file transfer for {}.", file.getName());
-        } catch (IOException e) {
+        } catch (IOException e) { // Requires IOException
             logger.error("I/O error sending file {}: {}", file.getName(), e.getMessage());
+            // Re-throw or handle appropriately if needed, but often just logging is okay here
+            // Re-throwing simplifies the method signature.
+            throw e;
         }
     }
 
