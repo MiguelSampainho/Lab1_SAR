@@ -35,7 +35,7 @@ public class Main {
     public final static boolean keepAlive = true;
     public final static int KeepAliveTime = 0; // set time in miliseconds to keep connection open
     //Authorization settings
-    public final static boolean Authorization = false ;
+    public final static boolean Authorization = true ;
     public final static String UserPass = "Username:Pass";
     public final static int GROUP_SIZE = 2;
     //port for Server socket serving HTTP requests

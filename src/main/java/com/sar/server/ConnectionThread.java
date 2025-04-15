@@ -15,144 +15,338 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.Locale;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Properties;
 import java.util.StringTokenizer;
-import java.util.TimeZone;
+import java.net.URLDecoder;
+
 
 public class ConnectionThread extends Thread  {
     private static final Logger logger = LoggerFactory.getLogger(ConnectionThread.class);
     private final HttpController controller;
 
     private final Main HTTPServer;
-    private final ServerSocket ServerSock;
+    private final ServerSocket ServerSock; // Can be SSLServerSocket or ServerSocket
     private final Socket client;
-    private final DateFormat HttpDateFormat;
-    
-    /** Creates a new instance of httpThread */
-    public ConnectionThread(Main HTTPServer, ServerSocket ServerSock, 
+
+    /** Creates a new instance of ConnectionThread */
+    public ConnectionThread(Main HTTPServer, ServerSocket ServerSock,
     Socket client, HttpController controller) {
         this.HTTPServer = HTTPServer;
         this.ServerSock = ServerSock;
         this.client = client;
         this.controller = controller;
-        this.HttpDateFormat = new SimpleDateFormat("EE, d MMM yyyy HH:mm:ss zz", Locale.UK);
-        this.HttpDateFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
-
         setPriority(NORM_PRIORITY - 1);
-}
-    
-
-     /** Reads a new HTTP Request from the input steam in to a Request object
-     * @param TextReader   input stream Buffered Reader coonected to client socket
-     * @param echo  if true, echoes the received message to the screen
-     * @return Request object containing the request received from the client, or null in case of error
-     * @throws java.io.IOException 
-     */
-    public Request GetRequest (BufferedReader TextReader) throws IOException {
-        // Get first line
-        String request = TextReader.readLine( );  	// Reads the first line
-        if (request == null) {
-            logger.debug("Invalid request Connection closed");
-            return null;
-        }
-        logger.info("Request: ", request);
-        StringTokenizer st= new StringTokenizer(request);
-        if (st.countTokens() != 3) {
-           logger.debug("Invalid request received ", request);
-           return null;  // Invalid request
-        } 
-         //create an object to store the http request
-         Request req= new Request (client.getInetAddress ().getHostAddress (), client.getPort (), ServerSock.getLocalPort ());  
-         req.method= st.nextToken();    // Store HTTP method
-         req.urlText= st.nextToken();    // Store URL
-         req.version= st.nextToken();  // Store HTTP version
-     
-        // read the remaining headers in to the headers property of the request object   
-        req.headers.readHeaders(TextReader);
-        
-        // check if the Content-Length size is different than zero. If true read the body of the request (that can contain POST data)
-        int clength= 0;
-        try {
-            String len= req.headers.getHeaderValue("Content-Length");
-            if (len != null)
-                clength= Integer.parseInt (len);
-            else if (!TextReader.ready ())
-                clength= 0;
-        } catch (NumberFormatException e) {
-            logger.error("Bad request\n");
-            return null;
-        }
-        if (clength>0) {
-            // Length is not 0 - read data to string
-            String str= new String ();
-            char [] cbuf= new char [clength];
-            //the content is not formed by line ended with \n so it need to be read char by char
-            int n, cnt= 0;
-            while ((cnt<clength) && ((n= TextReader.read (cbuf)) > 0)) {
-                str= str + new String (cbuf);
-                cnt += n;
-            }
-            if (cnt != clength) {
-                logger.info("Read request with {}} data bytes and Content-Length = {}} bytes\n",cnt, clength);
-                return null;
-            }
-            req.text= str;
-            logger.debug("Contents('"+req.text+"')\n");
-        }
-
-        return req;
-    }    
-   
-    
-     @Override
-    public void run( ) {
-
-        Response res= null;   // HTTP response object
-        Request req = null;   //HTTP request object
-        PrintStream TextPrinter= null;
-
-        try {
-            /*get the input and output Streams for the TCP connection and build
-              a text (ASCII) reader (TextReader) and writer (TextPrinter) */
-            InputStream in = client.getInputStream( );
-            BufferedReader TextReader = new BufferedReader(
-                    new InputStreamReader(in, "8859_1" ));
-            OutputStream out = client.getOutputStream( );
-            TextPrinter = new PrintStream(out, false, "8859_1");
-            // Read and parse request
-            req= GetRequest(TextReader); //reads the input http request if everything was read ok it returns true
-            //Create response object. 
-            res= new Response(HTTPServer.ServerName);
-            // Let the controler (HttpContrller) handle the request and fill the response.
-            controller.handleRequest(req, res);
-            // Send response
-            res.send_Answer(TextPrinter);
-
-        } catch (Exception e) {
-            logger.error("Error processing request", e);
-            if (res != null) {
-                res.setError(ReplyCode.BADREQ, req != null ? req.version : "HTTP/1.1");
-            }
-        } finally {
-            cleanup(TextPrinter);
-        }
-    }   
-
-
-    private void cleanup(PrintStream TextPrinter) {
-        try {
-            if (TextPrinter != null) TextPrinter.close();
-            if (client != null) client.close();
-        } catch (IOException e) {
-            logger.error("Error during cleanup", e);
-        } finally {
-            HTTPServer.thread_ended();
-            logger.debug("Connection closed for client: {}:{}", 
-                client.getInetAddress().getHostAddress(), 
-                client.getPort());
-        }
     }
 
-}
+    /** Reads a new HTTP Request from the input stream into a Request object */
+    public Request GetRequest(BufferedReader TextReader) throws IOException {
+        String request = TextReader.readLine();
+        if (request == null) {
+            logger.warn("Received invalid/null request. Connection seems closed by client or timed out.");
+            return null;
+        }
+
+        logger.info("Request Received: {}", request);
+        StringTokenizer st = new StringTokenizer(request);
+        if (st.countTokens() != 3) {
+            logger.warn("Invalid request line format: {}", request);
+            return null;
+        }
+
+        Request req = new Request(client.getInetAddress().getHostAddress(), client.getPort(), ServerSock.getLocalPort());
+        req.method = st.nextToken();
+        req.urlText = st.nextToken();
+        req.version = st.nextToken();
+
+        // Read Headers
+        try {
+           req.headers.readHeaders(TextReader);
+        } catch (IOException e) {
+            logger.error("IOException while reading headers: {}", e.getMessage());
+            return null;
+        }
+
+        // Parse Cookies
+        req.parseCookies();
+        if (!req.cookies.isEmpty()) {
+            logger.debug("Parsed cookies found: {}", req.cookies.stringPropertyNames());
+        }
+
+        // Handle Content-Length and POST body
+        int clength = 0;
+        String contentLengthHeader = req.headers.getHeaderValue("Content-Length");
+        if (contentLengthHeader != null) {
+            try {
+                clength = Integer.parseInt(contentLengthHeader.trim());
+            } catch (NumberFormatException e) {
+                logger.error("Bad request - Invalid Content-Length format: {}", contentLengthHeader);
+                return null;
+            }
+        }
+
+        if (clength > 0) {
+            if (req.method.equalsIgnoreCase("POST")) {
+                StringBuilder str = new StringBuilder(clength);
+                char[] cbuf = new char[1024];
+                int n, cnt = 0;
+                try {
+                    while (cnt < clength && (n = TextReader.read(cbuf, 0, Math.min(cbuf.length, clength - cnt))) != -1) {
+                        str.append(cbuf, 0, n);
+                        cnt += n;
+                        if (cnt >= clength) break;
+                    }
+                } catch (IOException e) {
+                    logger.error("IOException while reading request body: {}", e.getMessage());
+                    return null;
+                }
+                if (cnt != clength) {
+                    logger.warn("Read POST data length mismatch: expected {}, got {}.", clength, cnt);
+                }
+                req.text = str.toString();
+                if ("application/x-www-form-urlencoded".equalsIgnoreCase(req.headers.getHeaderValue("Content-Type"))) {
+                    req.getPostParameters().putAll(parseUrlEncoded(req.text));
+                }
+                logger.debug("Request Body Contents received ({} bytes)", cnt);
+            } else {
+                logger.warn("Received request with Content-Length but method is not POST (Method: {}). Body ignored.", req.method);
+            }
+        }
+        return req;
+    }
+
+    // Helper method to parse application/x-www-form-urlencoded data
+    private Properties parseUrlEncoded(String data) {
+       Properties params = new Properties();
+       if (data != null && !data.isEmpty()) {
+           try {
+               String[] pairs = data.split("&");
+               for (String pair : pairs) {
+                   int idx = pair.indexOf("=");
+                   if (idx >= 0) {
+                       String key = URLDecoder.decode(pair.substring(0, idx), StandardCharsets.UTF_8.name());
+                       String value = (idx < pair.length() - 1) ? URLDecoder.decode(pair.substring(idx + 1), StandardCharsets.UTF_8.name()) : "";
+                       params.setProperty(key, value);
+                   } else if (pair.length() > 0) {
+                        String key = URLDecoder.decode(pair, StandardCharsets.UTF_8.name());
+                        params.setProperty(key, "");
+                   }
+               }
+           } catch (Exception e) {
+               logger.error("Error parsing URL encoded POST parameters", e);
+           }
+       }
+       return params;
+    }
+
+    @Override
+    public void run() {
+        // Use try-with-resources for automatic closing of socket and streams
+        try (Socket clientSocket = this.client;
+             InputStream in = clientSocket.getInputStream();
+             BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.ISO_8859_1));
+             OutputStream out = clientSocket.getOutputStream();
+             PrintStream writer = new PrintStream(out, true, StandardCharsets.UTF_8.name())) // Use UTF-8 for response
+        {
+
+            boolean keepAlive = true;
+            logger.debug("Connection accepted from {}:{}. Starting keep-alive loop.", clientSocket.getInetAddress().getHostAddress(), clientSocket.getPort());
+
+            while (keepAlive && !clientSocket.isClosed() && !Thread.currentThread().isInterrupted()) {
+                logger.debug("Top of keep-alive loop. Waiting for request...");
+                Request req = GetRequest(reader);
+
+                if (req == null) {
+                    keepAlive = false;
+                    logger.warn("GetRequest returned null, breaking keep-alive loop.");
+                    break;
+                }
+
+                logger.info("Processing Request: {} {} {}", req.method, req.urlText, req.version);
+                Response resp = new Response(HTTPServer.ServerName);
+                resp.setVersion(req.version);
+
+                boolean proceedWithRequest = true;
+                boolean authorized = false;
+                boolean authorizedByCookie = false;
+
+                // --- 1. Handle HTTP to HTTPS Redirect ---
+                if (!(ServerSock instanceof javax.net.ssl.SSLServerSocket) &&
+                     ServerSock.getLocalPort() == Main.HTTPport &&
+                     Main.Authorization) {
+
+                   if ("HTTP/1.1".equals(req.version)) {
+                       logger.info("Redirecting HTTP request to HTTPS for URL: {}", req.urlText);
+                       resp.setCode(ReplyCode.TMPREDIRECT);
+                       String host = req.headers.getHeaderValue("Host");
+                       host = (host != null && host.contains(":")) ? host.substring(0, host.indexOf(":")) : (host != null ? host : "localhost");
+                       resp.setHeader("Location", "https://" + host + ":" + Main.HTTPSport + req.urlText);
+                       resp.setHeader("Connection", "close");
+                       resp.setHeader("Content-Length", "0");
+                       resp.setDate();
+                       resp.send_Answer(writer);
+                   } else {
+                        logger.warn("Received non-HTTP/1.1 request ({}) on HTTP port. Sending 400.", req.version);
+                        resp.setError(ReplyCode.BADREQ, req.version != null ? req.version : "HTTP/1.0");
+                        resp.send_Answer(writer);
+                   }
+                   keepAlive = false;
+                   proceedWithRequest = false;
+                }
+                // --- 2. Handle Authorization for HTTPS ---
+                else if (proceedWithRequest && Main.Authorization) {
+                    logger.debug("Authorization required. Checking first for cookie...");
+                    String cookieValue = req.cookies.getProperty("SARAuth");
+
+                    if ("Validated".equals(cookieValue)) {
+                        authorized = true;
+                        authorizedByCookie = true;
+                        logger.info("Authorization successful via Cookie.");
+                    }
+
+                    if (!authorized) {
+                        logger.debug("Cookie not found or invalid. Checking Authorization header...");
+                        String authHeader = req.headers.getHeaderValue("Authorization");
+
+                        if (authHeader == null || !authHeader.toLowerCase().startsWith("basic ")) {
+                            logger.warn("Authorization header missing or not Basic. Sending 401.");
+                            sendUnauthorizedResponse(resp, writer, req.version);
+                            keepAlive = false;
+                            proceedWithRequest = false;
+                        } else {
+                            try {
+                                String base64Credentials = authHeader.substring("Basic".length()).trim();
+                                byte[] credDecoded = Base64.getDecoder().decode(base64Credentials);
+                                String credentials = new String(credDecoded, StandardCharsets.UTF_8);
+                                final String[] values = credentials.split(":", 2);
+
+                                if (values.length == 2 && (values[0] + ":" + values[1]).equals(Main.UserPass)) {
+                                    logger.info("Authorization successful via Header for user: {}", values[0]);
+                                    authorized = true;
+                                    authorizedByCookie = false;
+                                    String cookieString = "SARAuth=Validated; Path=/; Secure; HttpOnly";
+                                    resp.addSetCookieHeader(cookieString);
+                                    logger.info("Set-Cookie header added for successful login via Header.");
+                                } else {
+                                    logger.warn("Authorization failed via Header. Incorrect credentials provided. Sending 401.");
+                                    sendUnauthorizedResponse(resp, writer, req.version);
+                                    keepAlive = false;
+                                    proceedWithRequest = false;
+                                }
+                            } catch (Exception e) {
+                                logger.error("Error decoding/processing Authorization header: {}", e.getMessage(), e);
+                                sendUnauthorizedResponse(resp, writer, req.version);
+                                keepAlive = false;
+                                proceedWithRequest = false;
+                            }
+                        }
+                    }
+
+                    if (authorized) {
+                       proceedWithRequest = true;
+                       if (authorizedByCookie) {
+                            String cookieString = "SARAuth=Validated; Path=/; Secure; HttpOnly";
+                            resp.addSetCookieHeader(cookieString);
+                            logger.info("Set-Cookie header added for successful authorization (by Cookie).");
+                       }
+                    }
+                } // End Authorization Check block
+
+                // --- 3. Process Request if Allowed ---
+                if (proceedWithRequest) {
+                    if (Main.Authorization) {
+                       logger.debug("Request authorized by {}. Handling request...", (authorizedByCookie ? "Cookie" : "Header"));
+                    } else {
+                        logger.debug("Authorization disabled. Handling request...");
+                    }
+
+                    try {
+                        controller.handleRequest(req, resp);
+                        logger.debug("controller.handleRequest completed with status {}", resp.getCode());
+                    } catch (Exception e) {
+                         logger.error("Error during controller.handleRequest: {}", e.getMessage(), e);
+                         resp.setError(ReplyCode.BADREQ, req.version);
+                         keepAlive = false;
+                    }
+
+                    // --- Determine Keep-Alive ---
+                    String connectionHeader = req.headers.getHeaderValue("Connection");
+                    if ("close".equalsIgnoreCase(connectionHeader) ||
+                        !"HTTP/1.1".equals(req.version) ||
+                        resp.getCode() >= 400 ||
+                        resp.getCode() == ReplyCode.TMPREDIRECT )
+                    {
+                         logger.debug("Setting Connection: close (ReqHdr: {}, Ver: {}, RespCode: {})", connectionHeader, req.version, resp.getCode());
+                         keepAlive = false;
+                         resp.setHeader("Connection", "close");
+                    } else {
+                         logger.debug("Setting Connection: keep-alive (Default for HTTP/1.1)");
+                         keepAlive = true;
+                         resp.setHeader("Connection", "keep-alive");
+                    }
+                    resp.setDate();
+
+                    // --- Send the Response ---
+                    try {
+                       resp.send_Answer(writer);
+                       logger.debug("Response with status {} sent.", resp.getCode());
+
+                       // Explicitly flush the underlying OutputStream after PrintStream operations
+                       try {
+                            out.flush();
+                            logger.debug("Underlying OutputStream flushed explicitly after send_Answer.");
+                       } catch (IOException flushEx) {
+                            logger.error("Error flushing underlying OutputStream: {}", flushEx.getMessage());
+                            keepAlive = false; // Force close if flush fails
+                       }
+
+                    } catch (IOException sendError) {
+                        logger.error("IOException during send_Answer: {}", sendError.getMessage());
+                        keepAlive = false;
+                    }
+                } else {
+                    logger.warn("Request processing skipped (redirected or unauthorized). keepAlive={}", keepAlive);
+                }
+
+                // Final check on keepAlive status
+                if (!keepAlive) {
+                    logger.warn("KeepAlive is false. Preparing to break connection loop for client {}:{}.", clientSocket.getInetAddress().getHostAddress(), clientSocket.getPort());
+                    break; // Exit the while loop
+                } else {
+                    logger.debug("KeepAlive is true. Continuing connection loop.");
+                }
+
+            } // End of while(keepAlive) loop
+            logger.debug("Exited keep-alive loop for client {}:{}.", clientSocket.getInetAddress().getHostAddress(), clientSocket.getPort());
+
+        } catch (IOException e) {
+            String message = e.getMessage();
+            if (message != null && (message.contains("Socket closed") || message.contains("Connection reset") || message.contains("Broken pipe") || message.contains("SSLHandshakeException"))) {
+               logger.warn("I/O Error in ConnectionThread (client likely disconnected or SSL issue): {}", message);
+            } else {
+               logger.error("I/O Error in ConnectionThread run method: {}", message, e);
+            }
+        } catch (Exception e) {
+            logger.error("Unexpected error in ConnectionThread run method: {}", e.getMessage(), e);
+        } finally {
+            // try-with-resources handles closing. Just notify main server.
+            HTTPServer.thread_ended();
+            logger.info("ConnectionThread finished for client {}:{}.", client.getInetAddress().getHostAddress(), client.getPort());
+        }
+    } // End of run() method
+
+
+    /** Helper method to send a 401 Unauthorized response */
+    private void sendUnauthorizedResponse(Response resp, PrintStream writer, String version) throws IOException {
+         logger.warn("Calling sendUnauthorizedResponse to send 401");
+         resp.setCode(ReplyCode.UNAUTHORIZED);
+         String effectiveVersion = version != null ? version : "HTTP/1.1";
+         resp.setVersion(effectiveVersion);
+         resp.setHeader("WWW-Authenticate", "Basic realm=\"SAR Server Restricted Area\"");
+         resp.setError(ReplyCode.UNAUTHORIZED, effectiveVersion);
+         resp.send_Answer(writer);
+         logger.debug("401 Unauthorized response sent.");
+    }
+
+} // End of class

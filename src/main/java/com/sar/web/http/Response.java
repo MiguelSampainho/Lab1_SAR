@@ -7,226 +7,184 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-import java.text.SimpleDateFormat;
-
-
 public class Response {
-    private static final org.slf4j.Logger logger = LoggerFactory.getLogger(Response.class);
-    /**
-     * Reply code information
-     */
+    private static final Logger logger = LoggerFactory.getLogger(Response.class);
+
     public ReplyCode code;
-    /**
-     * Reply headers data
-     */
-    public Headers headers; // stores the HTTP headers for the response
-    public ArrayList<String> setCookie;   // List to store Set-cookie header fields
-    /**
-     * Reply contents
-     * They are stored either in a text buffer or in a file
-     */
-    public String text; // buffer with reply contents for dynamic API responses or server generated HTML code
-    public File file;   // file used if text == null, for responses that contain a file  
+    public Headers headers;
+    public List<String> setCookieHeaders; // List for Set-Cookie header values
+    public String text;
+    public File file;
     private final String serverName;
-    /**
-     * Creates a new instance of HTTPAnswer
-      * @param server_name
-     */
+
     public Response(String server_name) {
-        this.code = new ReplyCode(); // code constains an instance of the HTTPReplyCode Class thar contains HTTP code values and an HTTP version field.
-        this.headers = new Headers ();  // Headers object to store response HTTP headers  
-        this.setCookie = new ArrayList<>(); // Array List of Strings to contain the Strings that make up the several values of the Set_Cookie Header. 
+        this.code = new ReplyCode();
+        this.headers = new Headers();
+        this.setCookieHeaders = new ArrayList<>();
         this.serverName = server_name;
-        /**
-         * define Server header field name
-         */
         this.headers.setHeader("Server", server_name);
-        // data
     }
 
-    public class DateUtil {
-        public static String getHTTPDate(Date date) {
-            SimpleDateFormat httpFormat = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.UK);
-            httpFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
-            return httpFormat.format(date);
+    // Static inner class for Date Formatting
+    public static class DateUtil {
+       public static String getHTTPDate(Date date) {
+           // Standard HTTP date format: EEE, dd MMM yyyy HH:mm:ss z
+           SimpleDateFormat httpFormat = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.UK);
+           httpFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
+           return httpFormat.format(date);
+       }
+   }
+
+    // Setters
+    public void setCode(int _code) { code.setCode(_code); }
+    public void setVersion(String v) { code.setVersion(v); }
+    public void setHeader(String name, String value) { headers.setHeader(name, value); }
+    public void setFile(File file) { this.file = file; this.text = null; }
+    public void setText(String text) { this.text = text; this.file = null; }
+
+    /** Adds a complete Set-Cookie header string. */
+    public void addSetCookieHeader(String fullCookieHeaderString) {
+        if (fullCookieHeaderString != null && !fullCookieHeaderString.isEmpty()) {
+            this.setCookieHeaders.add(fullCookieHeaderString);
+            logger.debug("Adding Set-Cookie header: {}", fullCookieHeaderString);
         }
     }
 
-    /* 
-    Method to set the HTTP reply code of the answer
-    */
-    public void setCode(int _code) {
-        code.setCode(_code);
-    }
-    /* 
-    Method to set the HTTP version of the answer
-    */
-    public void setVersion(String v) {
-        code.setVersion(v);
-    }
-     /* 
-    Method to set an HTTP header of the answer
-    */
-    public void setHeader(String name, String value) {
-        headers.setHeader(name, value);
-    }
-    /*
-     * Method to set the static file to be sent in the reply
-     */
-    public void setFile(File file) {
-        this.file = file;
-    }
-    /*
-     * Method to set the text to be sent in the reply
-     */
-    public void setText(String text) {
-        this.text = text;
-    }
-  /* 
-    Method to add a cookie value to the list of cookies that are to be sent in Set-Cookie Headers
-    */
-    public void addCookie(String cookie) {
-        setCookie.add(cookie);
-    }
-
-    /** Sets the headers needed in a reply with a static file content and fill
-     * the file property with the File object of the static file to send
-     * @param _f
-     * @param mime_enc */
-    public void setFileHeaders(File file, String contentType) {
+    /** Sets headers for file responses */
+     public void setFileHeaders(File file, String contentType) {
         this.file = file;
         this.text = null;
-     
         if(file != null && file.exists()){
+            headers.setHeader("Last-Modified", DateUtil.getHTTPDate(new Date(file.lastModified())));
             headers.setHeader("Content-Type", contentType);
             headers.setHeader("Content-Length", String.valueOf(file.length()));
-            headers.setHeader("Last-Modified", DateUtil.getHTTPDate(new Date(file.lastModified())));
-            headers.setHeader("Date", DateUtil.getHTTPDate(new Date()));
+            // Append charset for text types as per project spec
+            if (contentType.startsWith("text/")) {
+                headers.setHeader("Content-Type", contentType + "; charset=ISO-8859-1");
+            }
         } else {
-            logger.warn("Ficheiro inválido ou inexistente em setFileHeaders()");
+            logger.warn("Invalid or non-existent file in setFileHeaders(): {}", file != null ? file.getPath() : "null");
         }
-        logger.debug("Headers definidos em setFileHeaders: {}", headers);
+        logger.debug("File headers set for: {}", file != null ? file.getName() : "null file");
     }
 
-    /** Sets the headers needed in a reply with a locally generated HTML string
-     * (_text object) and fill the text property with the String object 
-     * containing the HTML to send
-     * @param _text */
+   /** Sets headers for text/HTML responses */
     public void setTextHeaders(String text) {
         this.text = text;
         this.file = null;
-       
+        // Use UTF-8 for dynamically generated HTML content
         headers.setHeader("Content-Type", "text/html; charset=UTF-8");
-        headers.setHeader("Content-Length", String.valueOf(text.length()));
-        headers.setHeader("Connection", "keep-alive");
-        headers.setHeader("Date", DateUtil.getHTTPDate(new Date()));
-
-        logger.debug("Headers definidos em setTextHeaders: {}", headers);
+        headers.setHeader("Content-Length", String.valueOf(text != null ? text.getBytes(StandardCharsets.UTF_8).length : 0));
+        logger.debug("Text headers set (Content-Type: text/html; charset=UTF-8).");
     }
 
-        /** Prepares an HTTP answer with an error code
-     * @param _code
-     * @param version */
+   /** Configures response for an error */
     public void setError(int codeNumber, String version) {
-        setVersion(version);
-        setDate();
+        setVersion(version != null ? version : "HTTP/1.1");
         code.setCode(codeNumber);
         String errorHtml = generateErrorPage(codeNumber);
         setTextHeaders(errorHtml);
+        setDate();
+        setHeader("Connection", "close"); // Errors typically close connection
     }
 
-    private String generateErrorPage(int code) {
+    /** Generates a simple HTML error page */
+    private String generateErrorPage(int codeNumber) {
+        String codeText = ReplyCode.codeText(codeNumber);
         return String.format(
-            "<html><head><title>Error %d</title></head>" +
-            "<body><h1>Error %d - %s</h1>" +
-            "<p>Generated by %s</p></body></html>",
-            code, code, ReplyCode.codeText(code), serverName
+            "<!DOCTYPE html><html><head><title>Error %d</title></head><body><h1>Error %d - %s</h1><p>Generated by %s</p></body></html>",
+            codeNumber, codeNumber, codeText != null ? codeText : "Unknown Error", serverName
         );
     }
 
-    /**
-     * Returns the current value of the answer code
-     * @return 
-     */
-    public int getCode() {
-        return code.getCode();
+    public int getCode() { return code.getCode(); }
+    public Enumeration<String> getAllHeaderNames() { return headers.getAllHeaderNames(); }
+
+    /** Sets the "Date" header field */
+    public void setDate() {
+        headers.setHeader("Date", DateUtil.getHTTPDate(new Date()));
     }
 
-    /**
-     * Returns an iterator over all header names
-     * @return 
-     */
-    public Enumeration<Object> get_Iterator_parameter_names() {
-        return headers.getAllHeaderNames();
-    }
-
-    /**
-     * Returns the array list with all cookie Strings to use as values in Set-Cookie Headers
-     * @return 
-     */
-    public ArrayList<String> getSetCookies() {
-        return setCookie;
-    }
-
-    /** Sets the "Date" header field with the local date in HTTP format */
-    void setDate() {
-        DateFormat httpformat =
-                new SimpleDateFormat("EE, d MMM yyyy HH:mm:ss zz", Locale.UK);
-        httpformat.setTimeZone(TimeZone.getTimeZone("GMT"));
-        headers.setHeader("Date", httpformat.format(new Date()));
-    }
-
-
-    /** Sends the HTTP reply to the client using 'pout' text device
-     * @param TextPrinter
-     * @param send_data indicates if data is present in the response or only headers
-     * @param echo
-     * @throws java.io.IOException */
+    /** Sends the HTTP reply to the client */
     public void send_Answer(PrintStream TextPrinter) throws IOException {
-        if (code.getCodeTxt() == null) {
-            code.setCode(ReplyCode.BADREQ);
+        if (code.isUndef()) {
+            logger.error("Response code is undefined before sending. Setting to 400.");
+            setError(ReplyCode.BADREQ, "HTTP/1.1");
         }
+        if (headers.getHeaderValue("Date") == null) {
+           setDate();
+        }
+
         logger.info("Sending reply: {} {} {}", code.getVersion(), code.getCode(), code.getCodeTxt());
-        TextPrinter.print(code.toString() + "\r\n");
-        
-        //Send all headers using the Headers object
-        headers.writeHeaders(TextPrinter);
-        /**
-         * Check if there are cookies to send if so add the corresponding Set-Cookie Headers
-         * Set-Cookies have to be sent manually using TextPrinter without using the Headers object 
-         * since it uses a Properties Object to store the headers and there can be multiple Set-cookie headers 
-         * and a Properties cannot have two Keys with the same value
-         */
-        //end of headers
-        TextPrinter.print("\r\n");
-        //write content if present
-        if (text != null) {
-                TextPrinter.print(text);
-        } else if (file != null) {
-            writeFile(TextPrinter);
-            } else if ((code.getCode() != ReplyCode.NOTMODIFIED)&&(code.getCode() != ReplyCode.TMPREDIRECT)) {
-                logger.error("Internal server error sending answer\n");
+        TextPrinter.print(code.toString() + "\r\n"); // Status Line
+
+        headers.writeHeaders(TextPrinter); // Send regular headers
+
+        // Send Set-Cookie headers
+        if (setCookieHeaders != null && !setCookieHeaders.isEmpty()) {
+           for (String cookieHeaderValue : setCookieHeaders) {
+               TextPrinter.print("Set-Cookie: " + cookieHeaderValue + "\r\n");
+               logger.debug("Writing Set-Cookie header: {}", cookieHeaderValue);
+           }
+        }
+
+        TextPrinter.print("\r\n"); // End of headers
+
+        // Write content if appropriate (not for 304, 204, 307)
+        boolean sendBody = code.getCode() != ReplyCode.NOTMODIFIED &&
+                           code.getCode() != 204 &&
+                           code.getCode() != ReplyCode.TMPREDIRECT;
+
+        if (sendBody) {
+            if (text != null) {
+                TextPrinter.print(text); // Assumes PrintStream was initialized with correct charset (UTF-8)
+            } else if (file != null) {
+                writeFile(TextPrinter);
+            } else {
+                // Log if body is expected but null (e.g., for 200 OK)
+                if (code.getCode() >= 200 && code.getCode() < 300 && code.getCode() != 204) {
+                   logger.warn("Response body (text or file) is null for status code {}", code.getCode());
+                }
             }
-    
-        TextPrinter.flush();
+        } else {
+            logger.debug("No body content sent for status code {}", code.getCode());
+        }
+
+        TextPrinter.flush(); // Flush PrintStream buffer
+        logger.debug("Response flushed.");
     }
 
+    /** Writes file content chunk by chunk */
     private void writeFile(PrintStream TextPrinter){
-        try (FileInputStream fin = new FileInputStream(file)) {
-            byte [] data = new byte [fin.available()];
-            fin.read( data );  // Read the entire file to buffer 'data'
-            // IMPORTANT - Please modify this code to send a file chunk-by-chunk
-            //             to avoid having CRASHES with BIG FILES
-            logger.info("HTTPAnswer may fail for large files - please modify it");
-            TextPrinter.write(data);
+        if (file == null || !file.exists()) {
+            logger.error("Attempted to write null or non-existent file.");
+            return;
         }
-        catch (IOException e ) {
-            System.out.println( "I/O error  opeening FileInputStream " + e );
+        try (FileInputStream fin = new FileInputStream(file)) {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            long totalBytes = file.length();
+            long writtenBytes = 0;
+            logger.debug("Starting file transfer for {} ({} bytes)...", file.getName(), totalBytes);
+            while ((bytesRead = fin.read(buffer)) != -1) {
+                // Write bytes directly to the underlying OutputStream of PrintStream
+                TextPrinter.write(buffer, 0, bytesRead);
+                writtenBytes += bytesRead;
+            }
+            // PrintStream auto-flush might handle this, or the explicit flush in send_Answer
+            if (writtenBytes != totalBytes) {
+                logger.warn("File write size mismatch for {}: expected {}, wrote {}", file.getName(), totalBytes, writtenBytes);
+            }
+            logger.debug("Finished file transfer for {}.", file.getName());
+        } catch (IOException e) {
+            logger.error("I/O error sending file {}: {}", file.getName(), e.getMessage());
         }
     }
-    
-}
+
+} // End of class
