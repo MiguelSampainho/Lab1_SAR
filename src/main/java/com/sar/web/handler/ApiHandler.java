@@ -14,7 +14,7 @@ import java.util.Properties;
 import java.util.Random;
 import java.time.Instant;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets; // Needed if using UTF-8 anywhere specific here
+import java.nio.charset.StandardCharsets;
 
 public class ApiHandler extends AbstractRequestHandler  {
     private static final Logger logger = LoggerFactory.getLogger(ApiHandler.class);
@@ -47,7 +47,12 @@ public class ApiHandler extends AbstractRequestHandler  {
             );
 
             response.setCode(ReplyCode.OK);
-            response.setTextHeaders(html); // Uses UTF-8 by default now
+            response.setTextHeaders(html); // Sets Content-Type, Length
+
+            // *** Add Cache-Control headers to prevent caching ***
+            response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+            response.setHeader("Pragma", "no-cache"); // For HTTP/1.0 compatibility
+            response.setHeader("Expires", "0"); // Proxies sometimes look at Expires
 
         } catch (Exception e) {
             logger.error("Error processing GET request in ApiHandler", e);
@@ -169,9 +174,13 @@ public class ApiHandler extends AbstractRequestHandler  {
             );
 
             response.setCode(ReplyCode.OK);
-            response.setTextHeaders(html); // Uses UTF-8 by default now
+            response.setTextHeaders(html); // Sets Content-Type, Length
 
-            // NOTE: Cache-Control headers removed in this version
+            // *** Add Cache-Control headers to prevent caching ***
+            response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+            response.setHeader("Pragma", "no-cache"); // For HTTP/1.0 compatibility
+            response.setHeader("Expires", "0"); // Proxies sometimes look at Expires
+
 
         } catch (Exception e) {
             logger.error("Error processing POST request in ApiHandler", e);
