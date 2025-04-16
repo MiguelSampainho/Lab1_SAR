@@ -1,6 +1,4 @@
 package com.sar.web.handler;
-
-// Correct import for the actual Response class
 import com.sar.web.http.Response;
 import com.sar.web.http.Request;
 import com.sar.web.http.ReplyCode; // Import ReplyCode
@@ -14,7 +12,7 @@ import java.text.DateFormat;
 import java.text.ParseException;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.Locale; // Needed for getMimeType extension processing
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 

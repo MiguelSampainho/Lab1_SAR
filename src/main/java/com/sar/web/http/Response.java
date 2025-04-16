@@ -4,14 +4,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.FileInputStream; // Needed for writeFile
-import java.io.IOException;     // Needed for send_Answer, writeFile
-import java.io.PrintStream;   // Needed for send_Answer, writeFile
-import java.nio.charset.StandardCharsets; // Needed for setTextHeaders, generateErrorPage
-import java.text.DateFormat;    // Needed for DateUtil
-import java.text.ParseException;// Needed for StaticFileHandler potentially (though handled there)
-import java.text.SimpleDateFormat; // Needed for DateUtil
-import java.util.*;             // Needed for Date, List, ArrayList, TimeZone, Locale, Enumeration
+import java.io.FileInputStream; 
+import java.io.IOException;     
+import java.io.PrintStream;   
+import java.nio.charset.StandardCharsets; 
+import java.text.DateFormat;    
+import java.text.ParseException;
+import java.text.SimpleDateFormat; 
+import java.util.*;             
 
 public class Response {
     // Logger IS used now
